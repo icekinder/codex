@@ -914,6 +914,7 @@ mod tests {
             thread_id,
             turn_id: None,
             goal: ThreadGoal {
+                goal_id: "goal-1".to_string(),
                 thread_id,
                 objective: objective.to_string(),
                 status: ThreadGoalStatus::Active,

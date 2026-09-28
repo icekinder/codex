@@ -55,6 +55,14 @@ pub struct GoalSetRequest<'a> {
     pub status: Option<ThreadGoalStatus>,
     pub token_budget: GoalTokenBudgetUpdate,
     pub max_goal_token_budget: Option<i64>,
+    pub if_matches: Option<GoalMatch<'a>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GoalMatch<'a> {
+    pub goal_id: &'a str,
+    pub objective: &'a str,
+    pub token_budget: Option<i64>,
 }
 
 #[derive(Clone, Debug)]
@@ -141,6 +149,25 @@ impl GoalService {
             .map_err(|err| GoalServiceError::Internal(format!("failed to read thread goal: {err}")))
     }
 
+    /// A wake needs a live runtime so it cannot consume an event on an unloaded thread.
+    pub fn has_thread_goal_runtime(&self, thread_id: ThreadId) -> bool {
+        self.runtime_for_thread(thread_id).is_some()
+    }
+
+    /// Starts one existing goal continuation after a successful wait-state wake.
+    pub async fn continue_thread_goal_if_idle(
+        &self,
+        thread_id: ThreadId,
+    ) -> Result<(), GoalServiceError> {
+        if let Some(runtime) = self.runtime_for_thread(thread_id) {
+            runtime
+                .continue_if_idle()
+                .await
+                .map_err(GoalServiceError::Internal)?;
+        }
+        Ok(())
+    }
+
     pub async fn set_thread_goal(
         &self,
         state_db: &codex_state::StateRuntime,
@@ -152,6 +179,7 @@ impl GoalService {
             status,
             token_budget,
             max_goal_token_budget,
+            if_matches,
         } = request;
         let status = status.map(state_status_from_protocol);
         let objective = match objective {
@@ -191,14 +219,26 @@ impl GoalService {
             tracing::warn!("failed to prepare external goal mutation: {err}");
         }
 
+        let existing_goal = state_db
+            .thread_goals()
+            .get_thread_goal(thread_id)
+            .await
+            .map_err(|err| {
+                GoalServiceError::Internal(format!("failed to read thread goal: {err}"))
+            })?;
+        if let Some(expected) = if_matches
+            && !existing_goal.as_ref().is_some_and(|goal| {
+                goal.goal_id == expected.goal_id
+                    && goal.objective == expected.objective
+                    && goal.token_budget == expected.token_budget
+            })
+        {
+            return Err(GoalServiceError::InvalidRequest(
+                "cannot update goal: the matched goal is no longer current".to_string(),
+            ));
+        }
+
         let (goal, previous_goal) = if let Some(objective) = objective {
-            let existing_goal = state_db
-                .thread_goals()
-                .get_thread_goal(thread_id)
-                .await
-                .map_err(|err| {
-                    GoalServiceError::Internal(format!("failed to read thread goal: {err}"))
-                })?;
             if let Some(existing_goal) = existing_goal.as_ref() {
                 let previous_goal = PreviousGoalSnapshot::from(existing_goal);
                 state_db
@@ -210,17 +250,16 @@ impl GoalService {
                             status,
                             token_budget,
                             expected_goal_id: Some(existing_goal.goal_id.clone()),
+                            expected_objective: if_matches
+                                .map(|expected| expected.objective.to_string()),
+                            expected_token_budget: if_matches.map(|expected| expected.token_budget),
                         },
                     )
                     .await
                     .map_err(|err| {
                         GoalServiceError::Internal(format!("failed to update thread goal: {err}"))
                     })?
-                    .ok_or_else(|| {
-                        GoalServiceError::InvalidRequest(format!(
-                            "cannot update goal for thread {thread_id}: no goal exists"
-                        ))
-                    })
+                    .ok_or_else(|| stale_or_missing_goal_error(thread_id, if_matches.is_some()))
                     .map(|goal| (goal, Some(previous_goal)))?
             } else {
                 state_db
@@ -238,18 +277,11 @@ impl GoalService {
                     .map(|goal| (goal, None))?
             }
         } else {
-            let existing_goal = state_db
-                .thread_goals()
-                .get_thread_goal(thread_id)
-                .await
-                .map_err(|err| {
-                    GoalServiceError::Internal(format!("failed to read thread goal: {err}"))
-                })?
-                .ok_or_else(|| {
-                    GoalServiceError::InvalidRequest(format!(
-                        "cannot update goal for thread {thread_id}: no goal exists"
-                    ))
-                })?;
+            let existing_goal = existing_goal.ok_or_else(|| {
+                GoalServiceError::InvalidRequest(format!(
+                    "cannot update goal for thread {thread_id}: no goal exists"
+                ))
+            })?;
             let previous_goal = PreviousGoalSnapshot::from(&existing_goal);
             let expected_goal_id = existing_goal.goal_id.clone();
             state_db
@@ -261,17 +293,16 @@ impl GoalService {
                         status,
                         token_budget,
                         expected_goal_id: Some(expected_goal_id),
+                        expected_objective: if_matches
+                            .map(|expected| expected.objective.to_string()),
+                        expected_token_budget: if_matches.map(|expected| expected.token_budget),
                     },
                 )
                 .await
                 .map_err(|err| {
                     GoalServiceError::Internal(format!("failed to update thread goal: {err}"))
                 })?
-                .ok_or_else(|| {
-                    GoalServiceError::InvalidRequest(format!(
-                        "cannot update goal for thread {thread_id}: no goal exists"
-                    ))
-                })
+                .ok_or_else(|| stale_or_missing_goal_error(thread_id, if_matches.is_some()))
                 .map(|goal| (goal, Some(previous_goal)))?
         };
 
@@ -365,4 +396,13 @@ impl GoalService {
     fn runtimes(&self) -> std::sync::MutexGuard<'_, HashMap<String, Weak<GoalRuntimeHandle>>> {
         self.runtimes.lock().unwrap_or_else(PoisonError::into_inner)
     }
+}
+
+fn stale_or_missing_goal_error(thread_id: ThreadId, conditional: bool) -> GoalServiceError {
+    let message = if conditional {
+        "cannot update goal: the matched goal is no longer current".to_string()
+    } else {
+        format!("cannot update goal for thread {thread_id}: no goal exists")
+    };
+    GoalServiceError::InvalidRequest(message)
 }

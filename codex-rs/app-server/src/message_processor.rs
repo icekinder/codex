@@ -1350,6 +1350,9 @@ impl MessageProcessor {
             ClientRequest::ThreadGoalGet { params, .. } => {
                 self.thread_goal_processor.thread_goal_get(params).await
             }
+            ClientRequest::ThreadGoalWake { params, .. } => {
+                self.thread_goal_processor.thread_goal_wake(params).await
+            }
             ClientRequest::ThreadGoalClear { params, .. } => {
                 self.thread_goal_processor
                     .thread_goal_clear(request_id.clone(), params)

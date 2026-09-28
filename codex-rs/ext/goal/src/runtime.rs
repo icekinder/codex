@@ -69,6 +69,7 @@ pub struct PreviousGoalSnapshot {
     pub goal_id: String,
     pub status: codex_state::ThreadGoalStatus,
     pub objective: String,
+    pub token_budget: Option<i64>,
 }
 
 impl From<&codex_state::ThreadGoal> for PreviousGoalSnapshot {
@@ -77,6 +78,7 @@ impl From<&codex_state::ThreadGoal> for PreviousGoalSnapshot {
             goal_id: goal.goal_id.clone(),
             status: goal.status,
             objective: goal.objective.clone(),
+            token_budget: goal.token_budget,
         }
     }
 }
@@ -222,6 +224,19 @@ impl GoalRuntimeHandle {
         let objective_changed = previous_goal.as_ref().is_some_and(|previous_goal| {
             !replaced_existing_goal && previous_goal.objective != goal.objective
         });
+        if let Some(previous_goal) = previous_goal.as_ref()
+            && (previous_goal.goal_id != goal.goal_id
+                || previous_goal.status != goal.status
+                || previous_goal.objective != goal.objective
+                || previous_goal.token_budget != goal.token_budget)
+        {
+            self.inner
+                .state_dbs
+                .thread_goals()
+                .clear_thread_goal_wait(self.thread_id(), &previous_goal.goal_id)
+                .await
+                .map_err(|err| err.to_string())?;
+        }
         match goal.status {
             codex_state::ThreadGoalStatus::Active => {
                 if self.inner.accounting_state.current_turn_id().is_some() {
@@ -373,6 +388,8 @@ impl GoalRuntimeHandle {
                     status: Some(status),
                     token_budget: None,
                     expected_goal_id: Some(active_goal.goal_id),
+                    expected_objective: None,
+                    expected_token_budget: None,
                 },
             )
             .await
@@ -464,6 +481,17 @@ impl GoalRuntimeHandle {
         };
         if goal.status != codex_state::ThreadGoalStatus::Active {
             self.inner.accounting_state.clear_active_goal();
+            return Ok(());
+        }
+        if self
+            .inner
+            .state_dbs
+            .thread_goals()
+            .get_thread_goal_wait(self.thread_id())
+            .await
+            .map_err(|err| err.to_string())?
+            .is_some_and(|wait| wait.goal_id == goal.goal_id && wait.waiting)
+        {
             return Ok(());
         }
         let start_options = thread

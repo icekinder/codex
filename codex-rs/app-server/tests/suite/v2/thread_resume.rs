@@ -2078,6 +2078,7 @@ async fn unloaded_thread_goal_mutations_respect_parent_ownership() -> Result<()>
                     retained,
                     ThreadGoalGetResponse {
                         goal: Some(original.goal.clone()),
+                        wait: None,
                     },
                 );
             } else if method == "thread/goal/set" {

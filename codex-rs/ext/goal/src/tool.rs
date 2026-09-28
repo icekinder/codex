@@ -23,9 +23,11 @@ use crate::metrics::GoalMetrics;
 use crate::spec::CREATE_GOAL_TOOL_NAME;
 use crate::spec::GET_GOAL_TOOL_NAME;
 use crate::spec::UPDATE_GOAL_TOOL_NAME;
+use crate::spec::WAIT_GOAL_TOOL_NAME;
 use crate::spec::create_create_goal_tool;
 use crate::spec::create_get_goal_tool;
 use crate::spec::create_update_goal_tool;
+use crate::spec::create_wait_goal_tool;
 
 #[derive(Clone)]
 pub(crate) struct GoalToolExecutor {
@@ -45,6 +47,7 @@ enum GoalToolKind {
     Get,
     Create,
     Update,
+    Wait,
 }
 
 #[derive(Debug, Deserialize)]
@@ -52,12 +55,19 @@ enum GoalToolKind {
 pub struct CreateGoalRequest {
     pub objective: String,
     pub token_budget: Option<i64>,
+    pub replaces_goal_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
 struct UpdateGoalArgs {
     status: ThreadGoalStatus,
+}
+
+#[derive(Debug, Deserialize)]
+struct WaitGoalArgs {
+    state_key: String,
+    reason: String,
 }
 
 #[derive(Debug, PartialEq, Serialize)]
@@ -138,6 +148,27 @@ impl GoalToolExecutor {
             max_goal_token_budget: None,
         }
     }
+
+    pub(crate) fn wait(
+        thread_id: ThreadId,
+        state_db: Arc<codex_state::StateRuntime>,
+        accounting_state: Arc<GoalAccountingState>,
+        analytics: GoalAnalytics,
+        event_emitter: GoalEventEmitter,
+        metrics: GoalMetrics,
+    ) -> Self {
+        Self {
+            kind: GoalToolKind::Wait,
+            execution_allowed: true,
+            thread_id,
+            state_db,
+            accounting_state,
+            analytics,
+            event_emitter,
+            metrics,
+            max_goal_token_budget: None,
+        }
+    }
 }
 
 impl<'call> ToolExecutor<ToolCall<'call>> for GoalToolExecutor {
@@ -146,6 +177,7 @@ impl<'call> ToolExecutor<ToolCall<'call>> for GoalToolExecutor {
             GoalToolKind::Get => GET_GOAL_TOOL_NAME,
             GoalToolKind::Create => CREATE_GOAL_TOOL_NAME,
             GoalToolKind::Update => UPDATE_GOAL_TOOL_NAME,
+            GoalToolKind::Wait => WAIT_GOAL_TOOL_NAME,
         })
     }
 
@@ -154,6 +186,7 @@ impl<'call> ToolExecutor<ToolCall<'call>> for GoalToolExecutor {
             GoalToolKind::Get => create_get_goal_tool(),
             GoalToolKind::Create => create_create_goal_tool(),
             GoalToolKind::Update => create_update_goal_tool(),
+            GoalToolKind::Wait => create_wait_goal_tool(),
         }
     }
 
@@ -174,12 +207,60 @@ impl<'call> ToolExecutor<ToolCall<'call>> for GoalToolExecutor {
                 GoalToolKind::Get => self.handle_get(invocation).await,
                 GoalToolKind::Create => self.handle_create(invocation).await,
                 GoalToolKind::Update => self.handle_update(invocation).await,
+                GoalToolKind::Wait => self.handle_wait(invocation).await,
             }
         })
     }
 }
 
 impl GoalToolExecutor {
+    async fn handle_wait(
+        &self,
+        invocation: ToolCall<'_>,
+    ) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
+        let args: WaitGoalArgs = parse_arguments(invocation.function_arguments()?)?;
+        let state_key = args.state_key.trim();
+        let reason = args.reason.trim();
+        if state_key.is_empty() || state_key.len() > 256 || reason.is_empty() || reason.len() > 1024
+        {
+            return Err(FunctionCallError::RespondToModel(
+                "wait_goal requires a nonempty state_key of at most 256 bytes and reason of at most 1024 bytes"
+                    .to_string(),
+            ));
+        }
+        let goal = self
+            .state_db
+            .thread_goals()
+            .get_thread_goal(self.thread_id)
+            .await
+            .map_err(|err| {
+                FunctionCallError::RespondToModel(format!("failed to read goal: {err}"))
+            })?
+            .filter(|goal| goal.status == codex_state::ThreadGoalStatus::Active)
+            .ok_or_else(|| {
+                FunctionCallError::RespondToModel("wait_goal requires an active goal".to_string())
+            })?;
+        let wait = self
+            .state_db
+            .thread_goals()
+            .set_thread_goal_wait(self.thread_id, &goal.goal_id, state_key)
+            .await
+            .map_err(|err| {
+                FunctionCallError::RespondToModel(format!("failed to wait for goal: {err}"))
+            })?
+            .ok_or_else(|| {
+                FunctionCallError::RespondToModel(
+                    "goal changed before wait_goal could record the wait".to_string(),
+                )
+            })?;
+        Ok(Box::new(JsonToolOutput::new(serde_json::json!({
+            "goalId": wait.goal_id,
+            "stateKey": wait.state_key,
+            "generation": wait.generation,
+            "waiting": wait.waiting,
+        }))))
+    }
+
     async fn handle_get(
         &self,
         invocation: ToolCall<'_>,
@@ -209,23 +290,46 @@ impl GoalToolExecutor {
         validate_goal_budget(request.token_budget, self.max_goal_token_budget)
             .map_err(FunctionCallError::RespondToModel)?;
 
-        let goal = self
-            .state_db
-            .thread_goals()
-            .insert_thread_goal(
-                self.thread_id,
-                request.objective.as_str(),
-                codex_state::ThreadGoalStatus::Active,
-                request.token_budget,
-            )
-            .await
-            .map_err(|err| FunctionCallError::RespondToModel(format!("failed to create goal: {err}")))?
-            .ok_or_else(|| {
-                FunctionCallError::RespondToModel(
-                    "cannot create a new goal because this thread has an unfinished goal; complete the existing goal first"
-                        .to_string(),
+        let goal = if let Some(expected_goal_id) = request.replaces_goal_id.as_deref() {
+            self.state_db
+                .thread_goals()
+                .replace_stopped_thread_goal(
+                    self.thread_id,
+                    expected_goal_id,
+                    request.objective.as_str(),
+                    codex_state::ThreadGoalStatus::Active,
+                    request.token_budget,
                 )
-            })?;
+                .await
+                .map_err(|err| {
+                    FunctionCallError::RespondToModel(format!("failed to replace goal: {err}"))
+                })?
+                .ok_or_else(|| {
+                    FunctionCallError::RespondToModel(
+                        "cannot replace goal because the matched goal is no longer current or is still active"
+                            .to_string(),
+                    )
+                })?
+        } else {
+            self.state_db
+                .thread_goals()
+                .insert_thread_goal(
+                    self.thread_id,
+                    request.objective.as_str(),
+                    codex_state::ThreadGoalStatus::Active,
+                    request.token_budget,
+                )
+                .await
+                .map_err(|err| {
+                    FunctionCallError::RespondToModel(format!("failed to create goal: {err}"))
+                })?
+                .ok_or_else(|| {
+                    FunctionCallError::RespondToModel(
+                        "cannot create a new goal because this thread has an unfinished goal; complete the existing goal first"
+                            .to_string(),
+                    )
+                })?
+        };
         fill_empty_thread_preview_if_possible(self.state_db.as_ref(), self.thread_id, &goal).await;
         let turn_id = self
             .accounting_state
@@ -282,6 +386,8 @@ impl GoalToolExecutor {
                     status: Some(state_status_from_protocol(args.status)),
                     token_budget: None,
                     expected_goal_id: None,
+                    expected_objective: None,
+                    expected_token_budget: None,
                 },
             )
             .await
@@ -488,6 +594,7 @@ pub(crate) async fn fill_empty_thread_preview_if_possible(
 pub(crate) fn protocol_goal_from_state(goal: codex_state::ThreadGoal) -> ThreadGoal {
     ThreadGoal {
         thread_id: goal.thread_id,
+        goal_id: goal.goal_id,
         objective: goal.objective,
         status: protocol_status_from_state(goal.status),
         token_budget: goal.token_budget,

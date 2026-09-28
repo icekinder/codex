@@ -812,6 +812,7 @@ v2_enum_from_core! {
 #[ts(export_to = "v2/")]
 pub struct ThreadGoal {
     pub thread_id: String,
+    pub goal_id: String,
     pub objective: String,
     pub status: ThreadGoalStatus,
     #[ts(type = "number | null")]
@@ -826,10 +827,21 @@ pub struct ThreadGoal {
     pub updated_at: i64,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadGoalMatch {
+    pub goal_id: String,
+    pub objective: String,
+    #[ts(type = "number | null")]
+    pub token_budget: Option<i64>,
+}
+
 impl From<codex_protocol::protocol::ThreadGoal> for ThreadGoal {
     fn from(value: codex_protocol::protocol::ThreadGoal) -> Self {
         Self {
             thread_id: value.thread_id.to_string(),
+            goal_id: value.goal_id,
             objective: value.objective,
             status: value.status.into(),
             token_budget: value.token_budget,
@@ -858,6 +870,10 @@ pub struct ThreadGoalSetParams {
     )]
     #[ts(optional = nullable, type = "number | null")]
     pub token_budget: Option<Option<i64>>,
+    /// Apply the update only while the current goal still has this identity,
+    /// objective, and token budget. Status and usage are intentionally excluded.
+    #[ts(optional = nullable)]
+    pub if_matches: Option<ThreadGoalMatch>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -879,6 +895,41 @@ pub struct ThreadGoalGetParams {
 #[ts(export_to = "v2/")]
 pub struct ThreadGoalGetResponse {
     pub goal: Option<ThreadGoal>,
+    pub wait: Option<ThreadGoalWait>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadGoalWait {
+    pub goal_id: String,
+    pub state_key: String,
+    #[ts(type = "number")]
+    pub generation: i64,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadGoalWakeParams {
+    pub thread_id: String,
+    pub goal_id: String,
+    /// Generation returned by `thread/goal/get` for the wait being woken.
+    #[ts(type = "number")]
+    pub observed_generation: i64,
+    /// Caller-verified revision of the observed condition. The server only
+    /// checks that it differs from the waiting revision; it cannot verify an
+    /// arbitrary external dependency, authority decision, or task result.
+    pub state_key: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadGoalWakeResponse {
+    /// A matching wait was durably woken once. This does not mean a turn has
+    /// started, that the caller's evidence was valid, or that work completed.
+    pub accepted: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]

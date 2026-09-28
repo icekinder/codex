@@ -436,6 +436,7 @@ async fn exit_interrupts_before_requesting_shutdown() -> Result<()> {
                 thread_id: thread_id.to_string(),
                 turn_id: None,
                 goal: codex_app_server_protocol::ThreadGoal {
+                    goal_id: "goal-1".to_string(),
                     status: codex_app_server_protocol::ThreadGoalStatus::Active,
                     ..goal
                 },

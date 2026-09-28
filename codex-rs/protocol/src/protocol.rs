@@ -4124,6 +4124,7 @@ pub fn validate_thread_goal_objective(value: &str) -> Result<(), String> {
 #[ts(export_to = "protocol/")]
 pub struct ThreadGoal {
     pub thread_id: ThreadId,
+    pub goal_id: String,
     pub objective: String,
     pub status: ThreadGoalStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]

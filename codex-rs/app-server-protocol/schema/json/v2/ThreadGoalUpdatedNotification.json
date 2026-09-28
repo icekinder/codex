@@ -7,6 +7,9 @@
           "format": "int64",
           "type": "integer"
         },
+        "goalId": {
+          "type": "string"
+        },
         "objective": {
           "type": "string"
         },
@@ -38,6 +41,7 @@
       },
       "required": [
         "createdAt",
+        "goalId",
         "objective",
         "status",
         "threadId",

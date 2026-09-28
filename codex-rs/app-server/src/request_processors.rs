@@ -222,6 +222,8 @@ use codex_app_server_protocol::ThreadGoalSetParams;
 use codex_app_server_protocol::ThreadGoalSetResponse;
 use codex_app_server_protocol::ThreadGoalStatus;
 use codex_app_server_protocol::ThreadGoalUpdatedNotification;
+use codex_app_server_protocol::ThreadGoalWakeParams;
+use codex_app_server_protocol::ThreadGoalWakeResponse;
 use codex_app_server_protocol::ThreadHistoryBuilder;
 #[cfg(test)]
 use codex_app_server_protocol::ThreadHistoryMode;

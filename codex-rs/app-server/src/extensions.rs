@@ -597,6 +597,7 @@ mod tests {
                 turn_id: Some(turn_id.to_string()),
                 goal: CoreThreadGoal {
                     thread_id,
+                    goal_id: "goal-1".to_string(),
                     objective: "wire extension events".to_string(),
                     status: ThreadGoalStatus::Active,
                     token_budget: Some(123),

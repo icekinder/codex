@@ -436,6 +436,7 @@ mod tests {
                 thread_id: metadata.id,
                 turn_id: None,
                 goal: ThreadGoal {
+                    goal_id: "goal-1".to_string(),
                     thread_id: metadata.id,
                     objective: "optimize the benchmark".to_string(),
                     status: ThreadGoalStatus::Active,

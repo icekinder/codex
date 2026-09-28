@@ -4508,6 +4508,7 @@ fn test_thread_goal(
     tokens_used: i64,
 ) -> codex_app_server_protocol::ThreadGoal {
     codex_app_server_protocol::ThreadGoal {
+        goal_id: "goal-1".to_string(),
         thread_id: "thread-1".to_string(),
         objective: "Keep improving the benchmark".to_string(),
         status,

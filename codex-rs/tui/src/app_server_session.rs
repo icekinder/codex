@@ -1464,6 +1464,7 @@ impl AppServerSession {
                     objective,
                     status,
                     token_budget,
+                    if_matches: None,
                 },
             })
             .await

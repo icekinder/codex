@@ -1,0 +1,14 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "properties": {
+    "accepted": {
+      "description": "A matching wait was durably woken once. This does not mean a turn has started, that the caller's evidence was valid, or that work completed.",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "accepted"
+  ],
+  "title": "ThreadGoalWakeResponse",
+  "type": "object"
+}

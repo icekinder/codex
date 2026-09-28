@@ -73,6 +73,7 @@ async fn installed_goal_tools_create_goal_and_fill_empty_preview() -> anyhow::Re
         result,
         json!({
             "goal": {
+                "goalId": result["goal"]["goalId"],
                 "threadId": thread_id,
                 "objective": "ship goal extension backend",
                 "status": "active",
@@ -94,6 +95,99 @@ async fn installed_goal_tools_create_goal_and_fill_empty_preview() -> anyhow::Re
     assert_eq!(
         metadata.preview.as_deref(),
         Some("ship goal extension backend")
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn wait_goal_tool_records_a_durable_wait_without_stopping_goal() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let harness = GoalExtensionHarness::new(runtime.clone(), thread_id).await?;
+    let tools = harness.tools();
+    tool_by_name(&tools, "create_goal")
+        .handle(tool_call(
+            "create_goal",
+            "call-create-waiting-goal",
+            json!({ "objective": "wait for a verified authorization" }),
+        ))
+        .await?;
+
+    let wait_call = tool_call(
+        "wait_goal",
+        "call-wait-goal",
+        json!({
+            "state_key": "authorization-v1",
+            "reason": "No new authorization has arrived",
+        }),
+    );
+    tool_by_name(&tools, "wait_goal").handle(wait_call).await?;
+
+    let goal = runtime
+        .thread_goals()
+        .get_thread_goal(thread_id)
+        .await?
+        .expect("goal should exist");
+    let wait = runtime
+        .thread_goals()
+        .get_thread_goal_wait(thread_id)
+        .await?
+        .expect("wait should exist");
+    assert_eq!(codex_state::ThreadGoalStatus::Active, goal.status);
+    assert_eq!(goal.goal_id, wait.goal_id);
+    assert_eq!("authorization-v1", wait.state_key);
+    assert!(wait.waiting);
+    Ok(())
+}
+
+#[tokio::test]
+async fn wait_goal_tool_rejects_missing_goal_and_unbounded_state() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let tools = installed_tools(runtime.clone(), thread_id).await;
+    let wait_tool = tool_by_name(&tools, "wait_goal");
+    let no_goal = wait_tool
+        .handle(tool_call(
+            "wait_goal",
+            "no-goal",
+            json!({"state_key": "state-v1", "reason": "Need evidence"}),
+        ))
+        .await;
+    assert_eq!(
+        no_goal.err(),
+        Some(FunctionCallError::RespondToModel(
+            "wait_goal requires an active goal".to_string()
+        ))
+    );
+    tool_by_name(&tools, "create_goal")
+        .handle(tool_call(
+            "create_goal",
+            "create-goal",
+            json!({"objective": "wait for evidence"}),
+        ))
+        .await?;
+    for (state_key, reason) in [
+        ("", "Need evidence".to_string()),
+        ("state-v1", "".to_string()),
+        ("state-v1", "x".repeat(1025)),
+    ] {
+        let result = wait_tool
+            .handle(tool_call(
+                "wait_goal",
+                "invalid-wait",
+                json!({"state_key": state_key, "reason": reason}),
+            ))
+            .await;
+        assert!(matches!(result, Err(FunctionCallError::RespondToModel(_))));
+    }
+    assert_eq!(
+        runtime
+            .thread_goals()
+            .get_thread_goal_wait(thread_id)
+            .await?,
+        None
     );
     Ok(())
 }
@@ -254,6 +348,75 @@ async fn installed_goal_tools_only_replace_complete_goal() -> anyhow::Result<()>
     assert_eq!(json!("replacement goal"), result["goal"]["objective"]);
     assert_eq!(json!("active"), result["goal"]["status"]);
     assert_eq!(json!(0), result["goal"]["tokensUsed"]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn create_goal_replaces_only_the_matching_stopped_goal() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let harness = GoalExtensionHarness::new(runtime.clone(), thread_id).await?;
+    let tools = harness.tools();
+    let create_tool = tool_by_name(&tools, "create_goal");
+    let update_tool = tool_by_name(&tools, "update_goal");
+
+    let first_call = tool_call(
+        "create_goal",
+        "call-create-blocked-goal",
+        json!({ "objective": "recover the complete outcome" }),
+    );
+    let first = create_tool.handle(first_call.clone()).await?;
+    let first_result = first.code_mode_result(&first_call.payload);
+    let blocked_goal_id = first_result["goal"]["goalId"]
+        .as_str()
+        .expect("goal id should be public")
+        .to_string();
+    update_tool
+        .handle(tool_call(
+            "update_goal",
+            "call-block-goal",
+            json!({ "status": "blocked" }),
+        ))
+        .await?;
+
+    let stale = create_tool
+        .handle(tool_call(
+            "create_goal",
+            "call-stale-replacement",
+            json!({
+                "objective": "start the approved successor",
+                "replaces_goal_id": "wrong-goal-id",
+            }),
+        ))
+        .await;
+    assert!(stale.is_err());
+    assert_eq!(
+        blocked_goal_id,
+        runtime
+            .thread_goals()
+            .get_thread_goal(thread_id)
+            .await?
+            .expect("blocked goal should remain")
+            .goal_id
+    );
+
+    let successor_call = tool_call(
+        "create_goal",
+        "call-matching-replacement",
+        json!({
+            "objective": "start the approved successor",
+            "replaces_goal_id": blocked_goal_id,
+        }),
+    );
+    let successor = create_tool.handle(successor_call.clone()).await?;
+    let result = successor.code_mode_result(&successor_call.payload);
+    assert_eq!(
+        json!("start the approved successor"),
+        result["goal"]["objective"]
+    );
+    assert_eq!(json!("active"), result["goal"]["status"]);
+    assert_ne!(first_result["goal"]["goalId"], result["goal"]["goalId"]);
     Ok(())
 }
 
@@ -1145,6 +1308,7 @@ async fn update_goal_can_stop_and_accounts_final_progress() -> anyhow::Result<()
             result,
             json!({
                 "goal": {
+                    "goalId": result["goal"]["goalId"],
                     "threadId": thread_id,
                     "objective": "ship goal extension backend",
                     "status": expected_status,
@@ -1341,6 +1505,7 @@ async fn goal_service_external_set_active_preserves_concurrent_usage() -> anyhow
                 status: Some(ThreadGoalStatus::Active),
                 token_budget: GoalTokenBudgetUpdate::Keep,
                 max_goal_token_budget: None,
+                if_matches: None,
             },
         )
         .await?;
@@ -1492,6 +1657,7 @@ async fn goal_service_sets_gets_and_clears_thread_goal() -> anyhow::Result<()> {
                 status: None,
                 token_budget: GoalTokenBudgetUpdate::Set(Some(123)),
                 max_goal_token_budget: None,
+                if_matches: None,
             },
         )
         .await?;
@@ -1536,6 +1702,7 @@ async fn goal_service_enforces_maximum_token_budget_on_creation_and_updates() ->
                 status: None,
                 token_budget: GoalTokenBudgetUpdate::Keep,
                 max_goal_token_budget: Some(100),
+                if_matches: None,
             },
         )
         .await?;
@@ -1550,6 +1717,7 @@ async fn goal_service_enforces_maximum_token_budget_on_creation_and_updates() ->
                 status: None,
                 token_budget: GoalTokenBudgetUpdate::Set(Some(101)),
                 max_goal_token_budget: Some(100),
+                if_matches: None,
             },
         )
         .await
@@ -1576,6 +1744,7 @@ async fn goal_service_enforces_maximum_token_budget_on_creation_and_updates() ->
                 status: None,
                 token_budget: GoalTokenBudgetUpdate::Set(Some(99)),
                 max_goal_token_budget: Some(100),
+                if_matches: None,
             },
         )
         .await?;
@@ -1590,6 +1759,7 @@ async fn goal_service_enforces_maximum_token_budget_on_creation_and_updates() ->
                 status: None,
                 token_budget: GoalTokenBudgetUpdate::Set(None),
                 max_goal_token_budget: Some(100),
+                if_matches: None,
             },
         )
         .await?;

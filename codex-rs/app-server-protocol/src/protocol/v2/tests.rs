@@ -5346,3 +5346,18 @@ fn tool_request_user_input_params_default_legacy_missing_is_blocking_to_true() {
         }
     );
 }
+
+#[test]
+fn thread_goal_wake_accepts_only_server_enforced_fields() {
+    let params = serde_json::from_value::<ThreadGoalWakeParams>(json!({
+        "threadId": "thread-1",
+        "goalId": "goal-1",
+        "observedGeneration": 4,
+        "stateKey": "dependency-revision-2"
+    }));
+
+    assert!(
+        params.is_ok(),
+        "wake should not require unverifiable metadata"
+    );
+}

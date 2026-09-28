@@ -5261,6 +5261,15 @@ class ThreadGoalGetParams(BaseModel):
     thread_id: Annotated[str, Field(alias="threadId")]
 
 
+class ThreadGoalMatch(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    goal_id: Annotated[str, Field(alias="goalId")]
+    objective: str
+    token_budget: Annotated[int | None, Field(alias="tokenBudget")] = None
+
+
 class ThreadGoalStatus(Enum):
     active = "active"
     paused = "paused"
@@ -5268,6 +5277,49 @@ class ThreadGoalStatus(Enum):
     usage_limited = "usageLimited"
     budget_limited = "budgetLimited"
     complete = "complete"
+
+
+class ThreadGoalWait(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    generation: int
+    goal_id: Annotated[str, Field(alias="goalId")]
+    state_key: Annotated[str, Field(alias="stateKey")]
+
+
+class ThreadGoalWakeParams(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    goal_id: Annotated[str, Field(alias="goalId")]
+    observed_generation: Annotated[
+        int,
+        Field(
+            alias="observedGeneration",
+            description="Generation returned by `thread/goal/get` for the wait being woken.",
+        ),
+    ]
+    state_key: Annotated[
+        str,
+        Field(
+            alias="stateKey",
+            description="Caller-verified revision of the observed condition. The server only checks that it differs from the waiting revision; it cannot verify an arbitrary external dependency, authority decision, or task result.",
+        ),
+    ]
+    thread_id: Annotated[str, Field(alias="threadId")]
+
+
+class ThreadGoalWakeResponse(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    accepted: Annotated[
+        bool,
+        Field(
+            description="A matching wait was durably woken once. This does not mean a turn has started, that the caller's evidence was valid, or that work completed."
+        ),
+    ]
 
 
 class ThreadHistoryMode(Enum):
@@ -6818,6 +6870,15 @@ class ThreadGoalGetRequest(BaseModel):
     id: RequestId
     method: Annotated[Literal["thread/goal/get"], Field(title="Thread/goal/getRequestMethod")]
     params: ThreadGoalGetParams
+
+
+class ThreadGoalWakeRequest(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    id: RequestId
+    method: Annotated[Literal["thread/goal/wake"], Field(title="Thread/goal/wakeRequestMethod")]
+    params: ThreadGoalWakeParams
 
 
 class ThreadGoalClearRequest(BaseModel):
@@ -9738,6 +9799,7 @@ class ThreadGoal(BaseModel):
         populate_by_name=True,
     )
     created_at: Annotated[int, Field(alias="createdAt")]
+    goal_id: Annotated[str, Field(alias="goalId")]
     objective: str
     status: ThreadGoalStatus
     thread_id: Annotated[str, Field(alias="threadId")]
@@ -9752,12 +9814,20 @@ class ThreadGoalGetResponse(BaseModel):
         populate_by_name=True,
     )
     goal: ThreadGoal | None = None
+    wait: ThreadGoalWait | None = None
 
 
 class ThreadGoalSetParams(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
     )
+    if_matches: Annotated[
+        ThreadGoalMatch | None,
+        Field(
+            alias="ifMatches",
+            description="Apply the update only while the current goal still has this identity, objective, and token budget. Status and usage are intentionally excluded.",
+        ),
+    ] = None
     objective: str | None = None
     status: ThreadGoalStatus | None = None
     thread_id: Annotated[str, Field(alias="threadId")]
@@ -12452,6 +12522,7 @@ class ClientRequest(
         | ThreadNameSetRequest
         | ThreadGoalSetRequest
         | ThreadGoalGetRequest
+        | ThreadGoalWakeRequest
         | ThreadGoalClearRequest
         | ThreadMetadataUpdateRequest
         | ThreadAttachmentAddRequest
@@ -12562,6 +12633,7 @@ class ClientRequest(
         | ThreadNameSetRequest
         | ThreadGoalSetRequest
         | ThreadGoalGetRequest
+        | ThreadGoalWakeRequest
         | ThreadGoalClearRequest
         | ThreadMetadataUpdateRequest
         | ThreadAttachmentAddRequest

@@ -7,6 +7,9 @@
           "format": "int64",
           "type": "integer"
         },
+        "goalId": {
+          "type": "string"
+        },
         "objective": {
           "type": "string"
         },
@@ -38,6 +41,7 @@
       },
       "required": [
         "createdAt",
+        "goalId",
         "objective",
         "status",
         "threadId",
@@ -57,6 +61,26 @@
         "complete"
       ],
       "type": "string"
+    },
+    "ThreadGoalWait": {
+      "properties": {
+        "generation": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "goalId": {
+          "type": "string"
+        },
+        "stateKey": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "generation",
+        "goalId",
+        "stateKey"
+      ],
+      "type": "object"
     }
   },
   "properties": {
@@ -64,6 +88,16 @@
       "anyOf": [
         {
           "$ref": "#/definitions/ThreadGoal"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "wait": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/ThreadGoalWait"
         },
         {
           "type": "null"

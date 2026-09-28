@@ -4429,8 +4429,41 @@
       ],
       "type": "object"
     },
+    "ThreadGoalMatch": {
+      "properties": {
+        "goalId": {
+          "type": "string"
+        },
+        "objective": {
+          "type": "string"
+        },
+        "tokenBudget": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "goalId",
+        "objective"
+      ],
+      "type": "object"
+    },
     "ThreadGoalSetParams": {
       "properties": {
+        "ifMatches": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ThreadGoalMatch"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Apply the update only while the current goal still has this identity, objective, and token budget. Status and usage are intentionally excluded."
+        },
         "objective": {
           "type": [
             "string",
@@ -4473,6 +4506,32 @@
         "complete"
       ],
       "type": "string"
+    },
+    "ThreadGoalWakeParams": {
+      "properties": {
+        "goalId": {
+          "type": "string"
+        },
+        "observedGeneration": {
+          "description": "Generation returned by `thread/goal/get` for the wait being woken.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "stateKey": {
+          "description": "Caller-verified revision of the observed condition. The server only checks that it differs from the waiting revision; it cannot verify an arbitrary external dependency, authority decision, or task result.",
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "goalId",
+        "observedGeneration",
+        "stateKey",
+        "threadId"
+      ],
+      "type": "object"
     },
     "ThreadHistoryMode": {
       "enum": [
@@ -6214,6 +6273,30 @@
         "params"
       ],
       "title": "Thread/goal/getRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "thread/goal/wake"
+          ],
+          "title": "Thread/goal/wakeRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/ThreadGoalWakeParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "Thread/goal/wakeRequest",
       "type": "object"
     },
     {

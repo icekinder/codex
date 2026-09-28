@@ -213,6 +213,7 @@ mod tests {
     fn active_goal_state(observed_at: Instant, time_used_seconds: i64) -> GoalStatusState {
         GoalStatusState::new(
             AppThreadGoal {
+                goal_id: "goal-1".to_string(),
                 thread_id: "thread".to_string(),
                 objective: "do the thing".to_string(),
                 status: AppThreadGoalStatus::Active,

@@ -615,6 +615,11 @@ client_request_definitions! {
         serialization: thread_id(params.thread_id),
         response: v2::ThreadGoalGetResponse,
     },
+    ThreadGoalWake => "thread/goal/wake" {
+        params: v2::ThreadGoalWakeParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadGoalWakeResponse,
+    },
     ThreadGoalClear => "thread/goal/clear" {
         params: v2::ThreadGoalClearParams,
         serialization: thread_id(params.thread_id),
@@ -2518,6 +2523,7 @@ mod tests {
                 objective: Some("ship it".to_string()),
                 status: None,
                 token_budget: None,
+                if_matches: None,
             },
         };
         assert_eq!(
@@ -4436,6 +4442,7 @@ mod tests {
                 objective: Some("ship goal mode".to_string()),
                 status: Some(v2::ThreadGoalStatus::Active),
                 token_budget: Some(Some(10_000)),
+                if_matches: None,
             },
         };
         let get_request = ClientRequest::ThreadGoalGet {
@@ -4469,6 +4476,7 @@ mod tests {
     fn thread_goal_notifications_are_not_marked_experimental() {
         let goal = v2::ThreadGoal {
             thread_id: "thr_123".to_string(),
+            goal_id: "goal_123".to_string(),
             objective: "ship goal mode".to_string(),
             status: v2::ThreadGoalStatus::Active,
             token_budget: Some(10_000),

@@ -259,6 +259,7 @@ fn test_goal(
     token_budget: Option<i64>,
 ) -> AppThreadGoal {
     AppThreadGoal {
+        goal_id: "goal-1".to_string(),
         thread_id: thread_id.to_string(),
         objective: "Keep improving the bare goal command until it feels calm and useful."
             .to_string(),

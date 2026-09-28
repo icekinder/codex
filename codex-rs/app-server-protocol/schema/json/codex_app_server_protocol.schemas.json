@@ -451,6 +451,30 @@
             },
             "method": {
               "enum": [
+                "thread/goal/wake"
+              ],
+              "title": "Thread/goal/wakeRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/ThreadGoalWakeParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Thread/goal/wakeRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "enum": [
                 "thread/goal/clear"
               ],
               "title": "Thread/goal/clearRequestMethod",
@@ -21482,6 +21506,9 @@
             "format": "int64",
             "type": "integer"
           },
+          "goalId": {
+            "type": "string"
+          },
           "objective": {
             "type": "string"
           },
@@ -21513,6 +21540,7 @@
         },
         "required": [
           "createdAt",
+          "goalId",
           "objective",
           "status",
           "threadId",
@@ -21586,14 +21614,57 @@
                 "type": "null"
               }
             ]
+          },
+          "wait": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/ThreadGoalWait"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "title": "ThreadGoalGetResponse",
         "type": "object"
       },
+      "ThreadGoalMatch": {
+        "properties": {
+          "goalId": {
+            "type": "string"
+          },
+          "objective": {
+            "type": "string"
+          },
+          "tokenBudget": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "goalId",
+          "objective"
+        ],
+        "type": "object"
+      },
       "ThreadGoalSetParams": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "properties": {
+          "ifMatches": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/ThreadGoalMatch"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Apply the update only while the current goal still has this identity, objective, and token budget. Status and usage are intentionally excluded."
+          },
           "objective": {
             "type": [
               "string",
@@ -21672,6 +21743,68 @@
           "threadId"
         ],
         "title": "ThreadGoalUpdatedNotification",
+        "type": "object"
+      },
+      "ThreadGoalWait": {
+        "properties": {
+          "generation": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "goalId": {
+            "type": "string"
+          },
+          "stateKey": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "generation",
+          "goalId",
+          "stateKey"
+        ],
+        "type": "object"
+      },
+      "ThreadGoalWakeParams": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "goalId": {
+            "type": "string"
+          },
+          "observedGeneration": {
+            "description": "Generation returned by `thread/goal/get` for the wait being woken.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "stateKey": {
+            "description": "Caller-verified revision of the observed condition. The server only checks that it differs from the waiting revision; it cannot verify an arbitrary external dependency, authority decision, or task result.",
+            "type": "string"
+          },
+          "threadId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "goalId",
+          "observedGeneration",
+          "stateKey",
+          "threadId"
+        ],
+        "title": "ThreadGoalWakeParams",
+        "type": "object"
+      },
+      "ThreadGoalWakeResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "accepted": {
+            "description": "A matching wait was durably woken once. This does not mean a turn has started, that the caller's evidence was valid, or that work completed.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "accepted"
+        ],
+        "title": "ThreadGoalWakeResponse",
         "type": "object"
       },
       "ThreadHistoryMode": {

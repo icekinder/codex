@@ -66,7 +66,7 @@ async fn empty_goal_continuations_block_after_three_without_activity(
     let mut mcp = TestAppServer::builder()
         .with_codex_home(codex_home.path())
         .without_managed_config()
-        .build_initialized()
+        .build_initialized_with_timeout(Duration::from_secs(30))
         .await?;
     let request = mcp
         .send_thread_start_request_with_auto_env(ThreadStartParams::default())

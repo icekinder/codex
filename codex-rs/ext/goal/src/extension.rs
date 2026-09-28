@@ -269,14 +269,22 @@ where
             else {
                 return;
             };
-            if let Some(goal) = goal
-                && matches!(
+            if let Some(goal) = goal {
+                if let Err(err) = self
+                    .state_dbs
+                    .thread_goals()
+                    .clear_thread_goal_wait(runtime.thread_id(), &goal.goal_id)
+                    .await
+                {
+                    tracing::warn!("failed to clear goal wait at turn start: {err}");
+                }
+                if matches!(
                     goal.status,
                     codex_state::ThreadGoalStatus::Active
                         | codex_state::ThreadGoalStatus::BudgetLimited
-                )
-            {
-                accounting.mark_turn_goal_active(input.turn_id, goal.goal_id);
+                ) {
+                    accounting.mark_turn_goal_active(input.turn_id, goal.goal_id);
+                }
             }
         })
     }
@@ -566,6 +574,14 @@ where
                 max_goal_token_budget,
             ),
             GoalToolExecutor::update(
+                runtime.thread_id(),
+                Arc::clone(&self.state_dbs),
+                runtime.accounting_state(),
+                self.analytics.clone(),
+                self.event_emitter.clone(),
+                self.metrics.clone(),
+            ),
+            GoalToolExecutor::wait(
                 runtime.thread_id(),
                 Arc::clone(&self.state_dbs),
                 runtime.accounting_state(),

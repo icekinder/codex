@@ -1,0 +1,28 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "properties": {
+    "goalId": {
+      "type": "string"
+    },
+    "observedGeneration": {
+      "description": "Generation returned by `thread/goal/get` for the wait being woken.",
+      "format": "int64",
+      "type": "integer"
+    },
+    "stateKey": {
+      "description": "Caller-verified revision of the observed condition. The server only checks that it differs from the waiting revision; it cannot verify an arbitrary external dependency, authority decision, or task result.",
+      "type": "string"
+    },
+    "threadId": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "goalId",
+    "observedGeneration",
+    "stateKey",
+    "threadId"
+  ],
+  "title": "ThreadGoalWakeParams",
+  "type": "object"
+}

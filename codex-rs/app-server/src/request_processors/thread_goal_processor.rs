@@ -2,6 +2,8 @@ use super::thread_input::DIRECT_INPUT_TO_MULTI_AGENT_V2_SUBAGENT_ERROR;
 use super::thread_input::can_accept_direct_input;
 use super::thread_input::ensure_direct_input_allowed;
 use super::*;
+use codex_app_server_protocol::ThreadGoalWait;
+use codex_goal_extension::GoalMatch;
 use codex_goal_extension::GoalObjectiveUpdate;
 use codex_goal_extension::GoalService;
 use codex_goal_extension::GoalServiceError;
@@ -69,6 +71,15 @@ impl ThreadGoalRequestProcessor {
             .map(|response| Some(response.into()))
     }
 
+    pub(crate) async fn thread_goal_wake(
+        &self,
+        params: ThreadGoalWakeParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        self.thread_goal_wake_inner(params)
+            .await
+            .map(|response| Some(response.into()))
+    }
+
     pub(crate) async fn thread_goal_clear(
         &self,
         request_id: ConnectionRequestId,
@@ -131,6 +142,11 @@ impl ThreadGoalRequestProcessor {
         if !self.config.features.enabled(Feature::Goals) {
             return Err(invalid_request("goals feature is disabled"));
         }
+        if params.status == Some(ThreadGoalStatus::Complete) && params.if_matches.is_none() {
+            return Err(invalid_request(
+                "completing a goal requires ifMatches for the current goal",
+            ));
+        }
 
         let thread_id = parse_thread_id_for_request(params.thread_id.as_str())?;
         let state_db = self
@@ -186,6 +202,11 @@ impl ThreadGoalRequestProcessor {
                         None => GoalTokenBudgetUpdate::Keep,
                     },
                     max_goal_token_budget,
+                    if_matches: params.if_matches.as_ref().map(|expected| GoalMatch {
+                        goal_id: expected.goal_id.as_str(),
+                        objective: expected.objective.as_str(),
+                        token_budget: expected.token_budget,
+                    }),
                 },
             )
             .await
@@ -262,7 +283,75 @@ impl ThreadGoalRequestProcessor {
             .await
             .map_err(goal_service_error)?
             .map(ThreadGoal::from);
-        Ok(ThreadGoalGetResponse { goal })
+        let state_goal = state_db
+            .thread_goals()
+            .get_thread_goal(thread_id)
+            .await
+            .map_err(|err| internal_error(format!("failed to read goal wait owner: {err}")))?;
+        let wait = state_db
+            .thread_goals()
+            .get_thread_goal_wait(thread_id)
+            .await
+            .map_err(|err| internal_error(format!("failed to read goal wait: {err}")))?
+            .filter(|wait| {
+                wait.waiting
+                    && state_goal.as_ref().is_some_and(|goal| {
+                        goal.status == codex_state::ThreadGoalStatus::Active
+                            && goal.goal_id == wait.goal_id
+                    })
+            })
+            .map(|wait| ThreadGoalWait {
+                goal_id: wait.goal_id,
+                state_key: wait.state_key,
+                generation: wait.generation,
+            });
+        Ok(ThreadGoalGetResponse { goal, wait })
+    }
+
+    async fn thread_goal_wake_inner(
+        &self,
+        params: ThreadGoalWakeParams,
+    ) -> Result<ThreadGoalWakeResponse, JSONRPCErrorError> {
+        if !self.config.features.enabled(Feature::Goals) {
+            return Err(invalid_request("goals feature is disabled"));
+        }
+        let state_key = params.state_key.trim();
+        if params.goal_id.is_empty()
+            || params.observed_generation <= 0
+            || state_key.is_empty()
+            || state_key.len() > 256
+        {
+            return Err(invalid_request(
+                "goal wake requires a goal ID, positive generation, and state key of at most 256 bytes",
+            ));
+        }
+        let thread_id = parse_thread_id_for_request(params.thread_id.as_str())?;
+        let state_db = self
+            .state_db_for_materialized_thread(thread_id, GoalAccess::Mutate)
+            .await?;
+        if !self.goal_service.has_thread_goal_runtime(thread_id) {
+            return Err(invalid_request("resume the thread before waking its goal"));
+        }
+        let accepted = state_db
+            .thread_goals()
+            .wake_thread_goal(
+                thread_id,
+                &params.goal_id,
+                params.observed_generation,
+                state_key,
+            )
+            .await
+            .map_err(|err| internal_error(format!("failed to wake goal: {err}")))?
+            .is_some();
+        if accepted
+            && let Err(err) = self
+                .goal_service
+                .continue_thread_goal_if_idle(thread_id)
+                .await
+        {
+            warn!("goal wake was recorded but continuation could not start: {err}");
+        }
+        Ok(ThreadGoalWakeResponse { accepted })
     }
 
     async fn thread_goal_clear_inner(
@@ -519,6 +608,7 @@ fn thread_settings_applied_item(
 pub(super) fn api_thread_goal_from_state(goal: codex_state::ThreadGoal) -> ThreadGoal {
     ThreadGoal {
         thread_id: goal.thread_id.to_string(),
+        goal_id: goal.goal_id,
         objective: goal.objective,
         status: api_thread_goal_status_from_state(goal.status),
         token_budget: goal.token_budget,

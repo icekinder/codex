@@ -455,6 +455,7 @@ mod tests {
 
     fn test_goal(status: ThreadGoalStatus) -> ThreadGoal {
         ThreadGoal {
+            goal_id: "goal-1".to_string(),
             thread_id: ThreadId::new().to_string(),
             objective: "Finish the thing.".to_string(),
             status,
