@@ -213,12 +213,6 @@ impl GoalService {
             ),
             None => None,
         };
-        if let Some(runtime) = runtime.as_ref()
-            && let Err(err) = runtime.prepare_external_goal_mutation().await
-        {
-            tracing::warn!("failed to prepare external goal mutation: {err}");
-        }
-
         let existing_goal = state_db
             .thread_goals()
             .get_thread_goal(thread_id)
@@ -236,6 +230,19 @@ impl GoalService {
             return Err(GoalServiceError::InvalidRequest(
                 "cannot update goal: the matched goal is no longer current".to_string(),
             ));
+        }
+        if objective.is_none() && existing_goal.is_none() {
+            return Err(GoalServiceError::InvalidRequest(format!(
+                "cannot update goal for thread {thread_id}: no goal exists"
+            )));
+        }
+
+        // Reject stale or missing requests before accounting or resetting the
+        // current turn. The SQL predicate below still checks a cross-process race.
+        if let Some(runtime) = runtime.as_ref()
+            && let Err(err) = runtime.prepare_external_goal_mutation().await
+        {
+            tracing::warn!("failed to prepare external goal mutation: {err}");
         }
 
         let (goal, previous_goal) = if let Some(objective) = objective {
@@ -325,6 +332,26 @@ impl GoalService {
         state_db: &codex_state::StateRuntime,
         thread_id: ThreadId,
     ) -> Result<bool, GoalServiceError> {
+        self.clear_thread_goal_with_expected(state_db, thread_id, None)
+            .await
+    }
+
+    pub async fn clear_thread_goal_if_matches(
+        &self,
+        state_db: &codex_state::StateRuntime,
+        thread_id: ThreadId,
+        expected_goal_id: &str,
+    ) -> Result<bool, GoalServiceError> {
+        self.clear_thread_goal_with_expected(state_db, thread_id, Some(expected_goal_id))
+            .await
+    }
+
+    async fn clear_thread_goal_with_expected(
+        &self,
+        state_db: &codex_state::StateRuntime,
+        thread_id: ThreadId,
+        expected_goal_id: Option<&str>,
+    ) -> Result<bool, GoalServiceError> {
         let runtime = self.runtime_for_thread(thread_id);
         // Hold this through the prepare/write window so idle continuation cannot
         // launch from goal state that this external mutation is about to change.
@@ -337,6 +364,19 @@ impl GoalService {
             ),
             None => None,
         };
+        let current_goal = state_db
+            .thread_goals()
+            .get_thread_goal(thread_id)
+            .await
+            .map_err(|err| {
+                GoalServiceError::Internal(format!("failed to read thread goal: {err}"))
+            })?;
+        if !current_goal
+            .as_ref()
+            .is_some_and(|goal| expected_goal_id.is_none_or(|expected| goal.goal_id == expected))
+        {
+            return Ok(false);
+        }
         if let Some(runtime) = runtime.as_ref()
             && let Err(err) = runtime.prepare_external_goal_mutation().await
         {
@@ -345,7 +385,7 @@ impl GoalService {
 
         let cleared_goal = state_db
             .thread_goals()
-            .delete_thread_goal(thread_id)
+            .delete_thread_goal_if_matches(thread_id, expected_goal_id)
             .await
             .map_err(|err| {
                 GoalServiceError::Internal(format!("failed to clear thread goal: {err}"))

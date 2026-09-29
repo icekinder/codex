@@ -375,11 +375,19 @@ impl ThreadGoalRequestProcessor {
             let thread_state = thread_state.lock().await;
             thread_state.listener_command_tx()
         };
-        let cleared = self
-            .goal_service
-            .clear_thread_goal(&state_db, thread_id)
-            .await
-            .map_err(goal_service_error)?;
+        let cleared = match params.expected_goal_id.as_deref() {
+            Some(expected_goal_id) => {
+                self.goal_service
+                    .clear_thread_goal_if_matches(&state_db, thread_id, expected_goal_id)
+                    .await
+            }
+            None => {
+                self.goal_service
+                    .clear_thread_goal(&state_db, thread_id)
+                    .await
+            }
+        }
+        .map_err(goal_service_error)?;
 
         self.outgoing
             .send_response(request_id, ThreadGoalClearResponse { cleared })

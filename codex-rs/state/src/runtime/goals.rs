@@ -685,10 +685,19 @@ WHERE thread_id = ?
         &self,
         thread_id: ThreadId,
     ) -> anyhow::Result<Option<crate::ThreadGoal>> {
+        self.delete_thread_goal_if_matches(thread_id, None).await
+    }
+
+    pub async fn delete_thread_goal_if_matches(
+        &self,
+        thread_id: ThreadId,
+        expected_goal_id: Option<&str>,
+    ) -> anyhow::Result<Option<crate::ThreadGoal>> {
         let row = sqlx::query(
             r#"
 DELETE FROM thread_goals
 WHERE thread_id = ?
+  AND (? IS NULL OR goal_id = ?)
 RETURNING
     thread_id,
     goal_id,
@@ -702,6 +711,8 @@ RETURNING
             "#,
         )
         .bind(thread_id.to_string())
+        .bind(expected_goal_id)
+        .bind(expected_goal_id)
         .fetch_optional(self.pool.as_ref())
         .await?;
 

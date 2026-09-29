@@ -171,6 +171,7 @@ async fn start_registered_turn(
         contributor
             .on_turn_start(TurnStartInput {
                 turn_id,
+                origin: codex_extension_api::TurnStartOrigin::DirectUser,
                 collaboration_mode: &mode,
                 token_usage_at_turn_start: None,
                 session_store,

@@ -113,6 +113,105 @@ async fn declared_wait_suppresses_automatic_goal_continuation() -> Result<()> {
 }
 
 #[tokio::test]
+async fn queued_turn_does_not_resume_an_unrelated_waiting_goal() -> Result<()> {
+    let server = create_mock_responses_server_sequence(vec![
+        responses::sse(vec![
+            responses::ev_response_created("wait-call"),
+            responses::ev_function_call(
+                "wait-goal",
+                "wait_goal",
+                r#"{"state_key":"dependency-v1","reason":"Need a changed dependency"}"#,
+            ),
+            responses::ev_completed("wait-call"),
+        ]),
+        responses::sse(vec![
+            responses::ev_response_created("wait-final"),
+            responses::ev_assistant_message("wait-message", "Waiting"),
+            responses::ev_completed("wait-final"),
+        ]),
+        responses::sse(vec![
+            responses::ev_response_created("queued-turn"),
+            responses::ev_assistant_message("queued-message", "Queued input handled"),
+            responses::ev_completed_with_tokens("queued-turn", 50),
+        ]),
+    ])
+    .await;
+    let codex_home = TempDir::new()?;
+    MockResponsesConfig::new(&server.uri())
+        .with_model("gpt-5.4")
+        .enable_feature(Feature::Goals)
+        .write(codex_home.path())?;
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .without_managed_config()
+        .build_initialized_with_timeout(Duration::from_secs(30))
+        .await?;
+    let request = mcp
+        .send_thread_start_request_with_auto_env(ThreadStartParams::default())
+        .await?;
+    let ThreadStartResponse { thread, .. } = mcp.read_response(request).await?;
+    let request = mcp
+        .send_raw_request(
+            "thread/goal/set",
+            Some(json!({"threadId": thread.id, "objective": "Wait for dependency"})),
+        )
+        .await?;
+    let _: ThreadGoalSetResponse = mcp.read_response(request).await?;
+    let _: serde_json::Value = timeout(
+        Duration::from_secs(30),
+        mcp.read_notification("turn/started"),
+    )
+    .await??;
+    let _: TurnCompletedNotification = timeout(
+        Duration::from_secs(30),
+        mcp.read_notification("turn/completed"),
+    )
+    .await??;
+
+    let request = mcp
+        .send_raw_request(
+            "thread/queue/add",
+            Some(json!({
+                "threadId": thread.id,
+                "input": [{"type": "text", "text": "Unrelated queued work", "textElements": []}],
+                "clientUserMessageId": "unrelated-queued-work",
+            })),
+        )
+        .await?;
+    let _: serde_json::Value = mcp.read_response(request).await?;
+    let _: serde_json::Value = timeout(
+        Duration::from_secs(30),
+        mcp.read_notification("turn/started"),
+    )
+    .await??;
+    let completed: TurnCompletedNotification = timeout(
+        Duration::from_secs(30),
+        mcp.read_notification("turn/completed"),
+    )
+    .await??;
+    assert_eq!(TurnStatus::Completed, completed.turn.status);
+
+    let request = mcp
+        .send_raw_request("thread/goal/get", Some(json!({"threadId": thread.id})))
+        .await?;
+    let goal_get: serde_json::Value = mcp.read_response(request).await?;
+    assert_eq!(json!("dependency-v1"), goal_get["wait"]["stateKey"]);
+    assert_eq!(json!("active"), goal_get["goal"]["status"]);
+    assert_eq!(json!(0), goal_get["goal"]["tokensUsed"]);
+    assert!(
+        timeout(
+            Duration::from_millis(500),
+            mcp.read_notification::<serde_json::Value>("turn/started"),
+        )
+        .await
+        .is_err(),
+        "queued work must not start the waiting goal"
+    );
+    server.verify().await;
+    Ok(())
+}
+
+#[tokio::test]
 async fn objective_change_resumes_waiting_goal_but_unchanged_set_does_not() -> Result<()> {
     let server = create_mock_responses_server_sequence(vec![
         responses::sse(vec![

@@ -26,6 +26,7 @@ use codex_extension_api::ToolFinishInput;
 use codex_extension_api::ToolPayload;
 use codex_extension_api::TurnErrorInput;
 use codex_extension_api::TurnStartInput;
+use codex_extension_api::TurnStartOrigin;
 use codex_extension_api::TurnStopInput;
 use codex_goal_extension::GoalExtensionConfig;
 use codex_goal_extension::GoalObjectiveUpdate;
@@ -431,6 +432,7 @@ async fn create_goal_resets_baseline_before_turn_stop_accounting() -> anyhow::Re
         contributor
             .on_turn_start(TurnStartInput {
                 turn_id: "missing-baseline",
+                origin: TurnStartOrigin::DirectUser,
                 collaboration_mode: &default_collaboration_mode(),
                 token_usage_at_turn_start: None,
                 session_store: &harness.session_store,
@@ -1948,6 +1950,7 @@ impl GoalExtensionHarness {
             contributor
                 .on_turn_start(TurnStartInput {
                     turn_id,
+                    origin: TurnStartOrigin::DirectUser,
                     collaboration_mode: &collaboration_mode,
                     token_usage_at_turn_start: Some(usage),
                     session_store: &self.session_store,

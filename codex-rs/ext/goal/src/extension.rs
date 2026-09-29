@@ -26,6 +26,7 @@ use codex_extension_api::TurnAbortInput;
 use codex_extension_api::TurnErrorInput;
 use codex_extension_api::TurnLifecycleContributor;
 use codex_extension_api::TurnStartInput;
+use codex_extension_api::TurnStartOrigin;
 use codex_extension_api::TurnStopInput;
 use codex_otel::MetricsClient;
 use codex_protocol::ThreadId;
@@ -239,11 +240,13 @@ where
                 return;
             };
 
-            if let Err(err) = self
-                .state_dbs
-                .thread_goals()
-                .clear_thread_goal_continuation_deferral(runtime.thread_id())
-                .await
+            let resumes_waiting_goal = input.origin == TurnStartOrigin::DirectUser;
+            if resumes_waiting_goal
+                && let Err(err) = self
+                    .state_dbs
+                    .thread_goals()
+                    .clear_thread_goal_continuation_deferral(runtime.thread_id())
+                    .await
             {
                 tracing::warn!("failed to clear deferred goal continuation: {err}");
             }
@@ -270,11 +273,40 @@ where
                 return;
             };
             if let Some(goal) = goal {
-                if let Err(err) = self
+                if !matches!(
+                    input.origin,
+                    TurnStartOrigin::DirectUser
+                        | TurnStartOrigin::GoalContinuation
+                        | TurnStartOrigin::Recovery
+                ) {
+                    accounting.clear_current_turn_goal();
+                    return;
+                }
+                let waiting_for_goal = match self
                     .state_dbs
                     .thread_goals()
-                    .clear_thread_goal_wait(runtime.thread_id(), &goal.goal_id)
+                    .get_thread_goal_wait(runtime.thread_id())
                     .await
+                {
+                    Ok(wait) => {
+                        wait.is_some_and(|wait| wait.goal_id == goal.goal_id && wait.waiting)
+                    }
+                    Err(err) => {
+                        tracing::warn!("failed to read goal wait at turn start: {err}");
+                        accounting.clear_current_turn_goal();
+                        return;
+                    }
+                };
+                if waiting_for_goal && !resumes_waiting_goal {
+                    accounting.clear_current_turn_goal();
+                    return;
+                }
+                if resumes_waiting_goal
+                    && let Err(err) = self
+                        .state_dbs
+                        .thread_goals()
+                        .clear_thread_goal_wait(runtime.thread_id(), &goal.goal_id)
+                        .await
                 {
                     tracing::warn!("failed to clear goal wait at turn start: {err}");
                 }
@@ -355,9 +387,16 @@ where
                 return;
             }
             let accounting = runtime.accounting_state();
-            if accounting
+            // Queued work remains part of the thread's causal chain even when
+            // it is not charged to the goal and must not resume a goal wait.
+            let preserves_goal_lineage = accounting
                 .current_active_goal_id_for_turn(turn_id)
                 .is_some()
+                || input
+                    .turn_store
+                    .get::<TurnStartOrigin>()
+                    .is_some_and(|origin| *origin == TurnStartOrigin::Automatic);
+            if preserves_goal_lineage
                 && let Some(options) = input.thread_store.get::<TurnStartOptions>()
             {
                 input.thread_store.insert_if(

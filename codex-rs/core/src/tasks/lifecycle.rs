@@ -3,6 +3,7 @@ use std::sync::Arc;
 use codex_analytics::TurnAnalyticsMetadata;
 use codex_extension_api::ExtensionData;
 use codex_extension_api::ThreadIdleCause;
+use codex_extension_api::TurnStartOrigin;
 use codex_extension_api::TurnStartPhase;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::TokenUsage;
@@ -21,6 +22,12 @@ impl Session {
         let metadata: Arc<dyn TurnAnalyticsMetadata> = turn_context.turn_metadata_state.clone();
         turn_context.extension_data.insert(metadata);
         let collaboration_mode = turn_context.collaboration_mode();
+        let origin = turn_context
+            .extension_data
+            .get::<TurnStartOrigin>()
+            .as_deref()
+            .copied()
+            .unwrap_or(TurnStartOrigin::Automatic);
         for contributor in self.services.extensions.turn_lifecycle_contributors() {
             if contributor.turn_start_phase(&self.services.thread_extension_data) != phase {
                 continue;
@@ -33,6 +40,7 @@ impl Session {
             contributor
                 .on_turn_start(codex_extension_api::TurnStartInput {
                     turn_id: turn_context.sub_id.as_str(),
+                    origin,
                     collaboration_mode: &collaboration_mode,
                     token_usage_at_turn_start,
                     session_store: &self.services.session_extension_data,

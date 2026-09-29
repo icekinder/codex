@@ -64,6 +64,17 @@ pub fn decode_rollout_line(value: Value) -> serde_json::Result<RolloutLine> {
         .map(serde_json::from_value::<Option<u64>>)
         .transpose()?
         .flatten();
+    // Goal IDs were added after goal updates were already persisted in rollouts.
+    // Keep those historical events readable without relaxing the live protocol.
+    // The empty ID is not a current-goal identity and cannot match a stored goal.
+    if fields.get("type").and_then(Value::as_str) == Some("event_msg")
+        && let Some(payload) = fields.get_mut("payload").and_then(Value::as_object_mut)
+        && payload.get("type").and_then(Value::as_str) == Some("thread_goal_updated")
+        && let Some(goal) = payload.get_mut("goal").and_then(Value::as_object_mut)
+    {
+        goal.entry("goalId")
+            .or_insert_with(|| Value::String(String::new()));
+    }
     let item = serde_json::from_value(Value::Object(fields))?;
 
     Ok(RolloutLine {

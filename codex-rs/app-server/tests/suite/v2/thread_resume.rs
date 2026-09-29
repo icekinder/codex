@@ -72,6 +72,7 @@ use codex_app_server_protocol::ThreadStatusChangedNotification;
 use codex_app_server_protocol::ThreadTurnsListParams;
 use codex_app_server_protocol::ThreadTurnsListResponse;
 use codex_app_server_protocol::ThreadUnsubscribeParams;
+use codex_app_server_protocol::TurnCompletedNotification;
 use codex_app_server_protocol::TurnEnvironmentParams;
 use codex_app_server_protocol::TurnItemsView;
 use codex_app_server_protocol::TurnStartParams;
@@ -159,6 +160,64 @@ use super::analytics::wait_for_matching_analytics_event;
 const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(25);
 #[cfg(not(windows))]
 const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+#[tokio::test]
+async fn legacy_goal_update_without_id_survives_thread_resume() -> Result<()> {
+    let server = create_mock_responses_server_repeating_assistant("Done").await;
+    let codex_home = TempDir::new()?;
+    mock_responses_config(&server.uri())
+        .enable_feature(Feature::Goals)
+        .write(codex_home.path())?;
+    let thread_id = create_fake_rollout(
+        codex_home.path(),
+        "2025-01-05T12-00-00",
+        "2025-01-05T12:00:00Z",
+        "",
+        Some("mock_provider"),
+        None,
+    )?;
+    let path = rollout_path(codex_home.path(), "2025-01-05T12-00-00", &thread_id);
+    let mut file = std::fs::OpenOptions::new().append(true).open(path)?;
+    writeln!(
+        file,
+        "{}",
+        json!({
+            "timestamp": "2025-01-05T12:00:00Z",
+            "type": "event_msg",
+            "payload": {
+                "type": "thread_goal_updated",
+                "threadId": thread_id,
+                "goal": {
+                    "threadId": thread_id,
+                    "objective": "Legacy goal still visible",
+                    "status": "active",
+                    "tokensUsed": 0,
+                    "timeUsedSeconds": 0,
+                    "createdAt": 1736078400,
+                    "updatedAt": 1736078400
+                }
+            }
+        })
+    )?;
+
+    let mut app = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .without_managed_config()
+        .build_initialized()
+        .await?;
+    let request = app
+        .send_thread_resume_request(ThreadResumeParams {
+            thread_id: thread_id.clone(),
+            exclude_turns: true,
+            ..Default::default()
+        })
+        .await?;
+    let resumed: ThreadResumeResponse =
+        timeout(DEFAULT_READ_TIMEOUT, app.read_response(request)).await??;
+    assert_eq!(resumed.thread.id, thread_id);
+    assert_eq!(resumed.thread.preview, "Legacy goal still visible");
+    Ok(())
+}
 
 #[tokio::test]
 async fn thread_resume_paginated_model_context_preserves_original_metadata() -> Result<()> {
@@ -3643,6 +3702,109 @@ fn ungated_goal_response(body: String) -> Vec<StreamingSseChunk> {
 }
 
 #[tokio::test]
+async fn stale_goal_set_does_not_account_a_running_goal() -> Result<()> {
+    let (release_goal_turn, goal_turn_gate) = oneshot::channel();
+    let (server, _) = start_streaming_sse_server(vec![
+        ungated_goal_response(responses::sse_completed("materialize-thread")),
+        vec![StreamingSseChunk {
+            gate: Some(goal_turn_gate),
+            body: responses::sse_completed("goal-turn"),
+        }],
+    ])
+    .await;
+    let codex_home = TempDir::new()?;
+    mock_responses_config(server.uri())
+        .enable_feature(Feature::Goals)
+        .write(codex_home.path())?;
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .without_managed_config()
+        .build_initialized_with_timeout(Duration::from_secs(30))
+        .await?;
+    let thread = mcp.start_thread(ThreadStartParams::default()).await?.thread;
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.start_turn_and_wait_for_completion(TurnStartParams {
+            thread_id: thread.id.clone(),
+            input: vec![UserInput::Text {
+                text: "materialize this thread".to_string(),
+                text_elements: Vec::new(),
+            }],
+            ..Default::default()
+        }),
+    )
+    .await??;
+
+    let set_id = mcp
+        .send_raw_request(
+            "thread/goal/set",
+            Some(json!({"threadId": thread.id, "objective": "active goal"})),
+        )
+        .await?;
+    let goal: ThreadGoalSetResponse = mcp.read_response(set_id).await?;
+    let _: serde_json::Value =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_notification("turn/started")).await??;
+    let get_id = mcp
+        .send_raw_request("thread/goal/get", Some(json!({"threadId": thread.id})))
+        .await?;
+    let before: ThreadGoalGetResponse = mcp.read_response(get_id).await?;
+    assert_eq!(
+        before.goal.as_ref().map(|current| &current.goal_id),
+        Some(&goal.goal.goal_id)
+    );
+
+    tokio::time::sleep(Duration::from_millis(1_200)).await;
+    let stale_id = mcp
+        .send_raw_request(
+            "thread/goal/set",
+            Some(json!({
+                "threadId": thread.id,
+                "status": "paused",
+                "ifMatches": {
+                    "goalId": "stale-goal-id",
+                    "objective": goal.goal.objective,
+                    "tokenBudget": goal.goal.token_budget,
+                },
+            })),
+        )
+        .await?;
+    let error: JSONRPCError = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(stale_id)),
+    )
+    .await??;
+    assert!(
+        error
+            .error
+            .message
+            .contains("matched goal is no longer current")
+    );
+    let get_id = mcp
+        .send_raw_request("thread/goal/get", Some(json!({"threadId": thread.id})))
+        .await?;
+    let after: ThreadGoalGetResponse = mcp.read_response(get_id).await?;
+    assert_eq!(after.goal, before.goal);
+
+    let pause_id = mcp
+        .send_raw_request(
+            "thread/goal/set",
+            Some(json!({"threadId": thread.id, "status": "paused"})),
+        )
+        .await?;
+    let _: ThreadGoalSetResponse = mcp.read_response(pause_id).await?;
+    release_goal_turn
+        .send(())
+        .expect("goal turn should still be open");
+    let completed: TurnCompletedNotification = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_notification("turn/completed"),
+    )
+    .await??;
+    assert_eq!(completed.turn.status, TurnStatus::Completed);
+    Ok(())
+}
+
+#[tokio::test]
 async fn thread_goal_lifecycle_emits_analytics_and_clear_deletes_goal() -> Result<()> {
     let server = create_mock_responses_server_sequence_unchecked(vec![
         responses::sse(vec![
@@ -3797,11 +3959,25 @@ async fn thread_goal_lifecycle_emits_analytics_and_clear_deletes_goal() -> Resul
     responses::assert_root_turn(&goal_request_body, Some(causal_turn_id))?;
     responses::assert_parent_turn(&goal_request_body, /*expected*/ None)?;
 
+    let stale_clear_id = mcp
+        .send_raw_request(
+            "thread/goal/clear",
+            Some(json!({
+                "threadId": thread.id,
+                "expectedGoalId": "replaced-goal-id",
+            })),
+        )
+        .await?;
+    let stale_clear: ThreadGoalClearResponse =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(stale_clear_id)).await??;
+    assert!(!stale_clear.cleared);
+
     let clear_id = mcp
         .send_raw_request(
             "thread/goal/clear",
             Some(json!({
                 "threadId": thread.id,
+                "expectedGoalId": persisted_goal_id,
             })),
         )
         .await?;
@@ -3843,6 +4019,48 @@ async fn thread_goal_lifecycle_emits_analytics_and_clear_deletes_goal() -> Resul
     let clear_again: ThreadGoalClearResponse =
         timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(clear_again_id)).await??;
     assert!(!clear_again.cleared);
+
+    let replacement_id = mcp
+        .send_raw_request(
+            "thread/goal/set",
+            Some(json!({
+                "threadId": thread.id,
+                "objective": "replacement goal survives a delayed clear",
+                "status": "paused",
+            })),
+        )
+        .await?;
+    let replacement: ThreadGoalSetResponse =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(replacement_id)).await??;
+    assert_ne!(replacement.goal.goal_id, persisted_goal_id);
+    let delayed_clear_id = mcp
+        .send_raw_request(
+            "thread/goal/clear",
+            Some(json!({
+                "threadId": thread.id,
+                "expectedGoalId": persisted_goal_id,
+            })),
+        )
+        .await?;
+    let delayed_clear: ThreadGoalClearResponse =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(delayed_clear_id)).await??;
+    assert!(!delayed_clear.cleared);
+    let get_id = mcp
+        .send_raw_request("thread/goal/get", Some(json!({"threadId": thread.id})))
+        .await?;
+    let current: ThreadGoalGetResponse =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(get_id)).await??;
+    assert_eq!(current.goal, Some(replacement.goal));
+
+    let null_clear_id = mcp
+        .send_raw_request(
+            "thread/goal/clear",
+            Some(json!({"threadId": thread.id, "expectedGoalId": null})),
+        )
+        .await?;
+    let null_clear: ThreadGoalClearResponse =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(null_clear_id)).await??;
+    assert!(null_clear.cleared);
 
     Ok(())
 }

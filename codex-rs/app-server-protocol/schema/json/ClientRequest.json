@@ -4409,6 +4409,13 @@
     },
     "ThreadGoalClearParams": {
       "properties": {
+        "expectedGoalId": {
+          "description": "If supplied, clear only this exact goal. Omission retains the legacy unconditional clear-current-goal behavior.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "threadId": {
           "type": "string"
         }

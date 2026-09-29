@@ -937,6 +937,10 @@ pub struct ThreadGoalWakeResponse {
 #[ts(export_to = "v2/")]
 pub struct ThreadGoalClearParams {
     pub thread_id: String,
+    /// If supplied, clear only this exact goal. Omission retains the legacy
+    /// unconditional clear-current-goal behavior.
+    #[ts(optional = nullable)]
+    pub expected_goal_id: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]

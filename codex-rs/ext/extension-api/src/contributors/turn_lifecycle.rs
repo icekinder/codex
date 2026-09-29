@@ -14,10 +14,22 @@ pub enum TurnStartPhase {
     RegularTaskStart,
 }
 
+/// Admission path of a turn, assigned by the host from its submission mode and
+/// internal goal-continuation trigger rather than from user-message content.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TurnStartOrigin {
+    DirectUser,
+    GoalContinuation,
+    Automatic,
+    Recovery,
+}
+
 /// Input supplied when the host starts a turn.
 pub struct TurnStartInput<'a> {
     /// Stable host-owned turn identifier.
     pub turn_id: &'a str,
+    /// Host-owned admission path for this turn.
+    pub origin: TurnStartOrigin,
     /// Effective collaboration mode for this turn.
     pub collaboration_mode: &'a CollaborationMode,
     /// Total token usage snapshot captured when the turn started.

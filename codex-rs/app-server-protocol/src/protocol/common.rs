@@ -4455,6 +4455,7 @@ mod tests {
             request_id: RequestId::Integer(3),
             params: v2::ThreadGoalClearParams {
                 thread_id: "thr_123".to_string(),
+                expected_goal_id: None,
             },
         };
 

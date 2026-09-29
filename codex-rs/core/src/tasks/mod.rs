@@ -502,6 +502,9 @@ impl Session {
                 },
             )
             .await;
+        turn_context
+            .extension_data
+            .insert(codex_extension_api::TurnStartOrigin::Automatic);
         if let Some(trigger) = start_options.turn_trigger {
             turn_context.turn_metadata_state.set_turn_trigger(trigger);
         }

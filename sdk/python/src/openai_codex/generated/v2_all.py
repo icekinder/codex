@@ -5237,6 +5237,13 @@ class ThreadGoalClearParams(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
     )
+    expected_goal_id: Annotated[
+        str | None,
+        Field(
+            alias="expectedGoalId",
+            description="If supplied, clear only this exact goal. Omission retains the legacy unconditional clear-current-goal behavior.",
+        ),
+    ] = None
     thread_id: Annotated[str, Field(alias="threadId")]
 
 

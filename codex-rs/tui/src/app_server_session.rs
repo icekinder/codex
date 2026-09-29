@@ -1481,6 +1481,7 @@ impl AppServerSession {
                 request_id,
                 params: ThreadGoalClearParams {
                     thread_id: thread_id.to_string(),
+                    expected_goal_id: None,
                 },
             })
             .await

@@ -127,6 +127,7 @@ impl PreparedTurnInputSettings {
         session: &Arc<Session>,
         submission_id: String,
         kind: TurnStartKind,
+        turn_origin: codex_extension_api::TurnStartOrigin,
     ) -> CodexResult<Option<Arc<TurnContext>>> {
         let TurnStartOptions {
             turn_trigger,
@@ -169,6 +170,7 @@ impl PreparedTurnInputSettings {
         let Some((turn_context, settings_snapshot)) = turn_context else {
             return Ok(None);
         };
+        turn_context.extension_data.insert(turn_origin);
         if let Some(turn_trigger) = turn_trigger {
             turn_context
                 .turn_metadata_state
@@ -211,6 +213,11 @@ pub(super) async fn handle(
     match mode {
         TurnInputMode::StartOrSteer => start_or_steer(session, request, submission_id).await,
         TurnInputMode::StartIfIdle => {
+            let turn_origin = if request.start.turn_trigger.as_deref() == Some("goal") {
+                codex_extension_api::TurnStartOrigin::GoalContinuation
+            } else {
+                codex_extension_api::TurnStartOrigin::Automatic
+            };
             let kind = match &request.input {
                 SubmittedTurnInput::UserInput { content, .. } if !content.is_empty() => {
                     TurnStartKind::User
@@ -224,6 +231,7 @@ pub(super) async fn handle(
                 request,
                 submission_id,
                 kind,
+                turn_origin,
                 /*expected_previous_turn_id*/ None,
             )
             .await
@@ -241,6 +249,7 @@ pub(super) async fn handle(
                 request,
                 submission_id,
                 TurnStartKind::Recovery,
+                codex_extension_api::TurnStartOrigin::Recovery,
                 Some(expected_previous_turn_id),
             )
             .await
@@ -268,6 +277,7 @@ pub(super) async fn handle_recovery(
         request,
         submission_id,
         TurnStartKind::Recovery,
+        codex_extension_api::TurnStartOrigin::Recovery,
         /*expected_previous_turn_id*/ None,
     )
     .await
@@ -340,7 +350,12 @@ async fn start_or_steer(
                 Some(admission)
             };
             let Some(turn_context) = settings
-                .apply_started(session, submission_id.clone(), TurnStartKind::User)
+                .apply_started(
+                    session,
+                    submission_id.clone(),
+                    TurnStartKind::User,
+                    codex_extension_api::TurnStartOrigin::DirectUser,
+                )
                 .await?
             else {
                 unreachable!("explicit user input can enter Plan mode");
@@ -381,6 +396,7 @@ async fn start_if_idle(
     request: TurnInputRequest,
     submission_id: String,
     kind: TurnStartKind,
+    turn_origin: codex_extension_api::TurnStartOrigin,
     expected_previous_turn_id: Option<String>,
 ) -> CodexResult<TurnInputSubmission> {
     let TurnInputRequest {
@@ -462,7 +478,7 @@ async fn start_if_idle(
         }
     };
     let turn_context = match settings
-        .apply_started(session, submission_id.clone(), kind)
+        .apply_started(session, submission_id.clone(), kind, turn_origin)
         .await
     {
         Ok(Some(turn_context)) => turn_context,
